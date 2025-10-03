@@ -12,7 +12,7 @@ method = "HEAD",
 path = "/validate/novnc",
 headers = {
         ["Cookie"] = ngx.var.http_cookie,
-        ["Host"] = "firerpa.local"
+        ["Host"] = "cloud.local"
 },
 })
 requ:close()

@@ -29,7 +29,6 @@ COPY nginx.conf         ${OPENRESTY}/nginx/conf
 COPY redis.conf         /etc
 
 COPY account.py         /usr/bin
-COPY startmitm.py       /usr/bin
 COPY entry              /usr/bin
 
 RUN bash /tmp/build/build-main.sh

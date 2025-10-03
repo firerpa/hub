@@ -1,17 +1,20 @@
 version: "3"
-# docker run -d --name firerpa --privileged -v ~/firerpa:/user -e DOMAIN=firerpa.local -e WEB_PORT=8000 -e API_PORT=65000 -p 8000:8000 -p 65000:65000 --restart always registry.device-farm.com/firerpa/server:latest
+# docker run -d --name firerpa --net host --privileged -v ~/hub-data:/user -e DOMAIN=firerpa.local -e WEB_PORT=8000 -e API_PORT=65000 -e TOP_ENDPOINT=.. -e TOP_CLIENT_KEY=.. -e TOP_SECRET=.. -p 8000:8000 -p 65000:65000 --restart always registry.device-farm.com/firerpa/server:latest
 services:
         firerpa:
-                container_name: hub
-                image: .
+                container_name: firerpa
+                image: hub:latest
+                network_mode: host
                 privileged: true
                 volumes:
-                        - ~/hub:/user
+                        - ~/hub-data:/user
                 environment:
                         - DOMAIN=firerpa.local
                         - WEB_PORT=8000
                         - API_PORT=65000
-                        - ADDR=192.168.1.2
+                        - TOP_ENDPOINT=
+                        - TOP_CLIENT_KEY=
+                        - TOP_SECRET=
                 ports:
                         - 8000:8000
                         - 65000:65000

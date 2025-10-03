@@ -4,14 +4,19 @@
 # See file LICENSE for detail or copy at https://opensource.org/licenses/MIT
 #encoding=utf-8
 import os
+import uuid
+import json
 import random
-import threading
+import requests
 import IP2Location
+import threading
+
+from hashlib import sha256
+from OpenSSL import crypto
+
+from python_hosts import Hosts, HostsEntry
 
 from os.path import isfile
-from OpenSSL import crypto
-from hashlib import sha256
-from python_hosts import Hosts, HostsEntry
 
 usrdir = os.path.expanduser("~")
 current = os.path.dirname(__file__)

@@ -19,7 +19,11 @@ STATE_ONLINE   =  1
 
 class BaseDatabaseModel(Model):
     class Meta:
-        database = SqliteDatabase(None)
+        database = SqliteDatabase("/user/database.db", pragmas={
+                                            "foreign_keys": "1",
+                                            "locking_mode": "NORMAL",
+                                            "journal_mode": "wal",
+                                            "synchronous": "NORMAL"})
         only_save_dirty = True
     def to_dict(self, **kwargs):
         ret = model_to_dict(self, **kwargs)
@@ -31,7 +35,7 @@ class Config(BaseDatabaseModel):
     value               = CharField()
 
 
-class Group(BaseDatabaseModel):
+class User(BaseDatabaseModel):
     name                = CharField(unique=True, index=True)
     contact             = CharField(null=True, index=True)
 
@@ -48,11 +52,14 @@ class Group(BaseDatabaseModel):
 class Device(BaseDatabaseModel):
     domain              = CharField(unique=True, index=True)
     dev_id              = CharField(null=True, index=True)
+    token_id            = CharField(unique=True, index=True)
 
     comment             = CharField(null=True, max_length=4096)
 
     service_port        = IntegerField(default=65000)
 
+    top_ip              = CharField(null=True)
+    vpn_ip              = CharField(null=True)
     default_ip          = CharField(null=True)
 
     boot_time           = IntegerField(null=True, default=0)
@@ -94,11 +101,11 @@ class Device(BaseDatabaseModel):
     state               = SmallIntegerField(null=True, default=STATE_PENDING)
 
 
-class GroupDevice(BaseDatabaseModel):
+class UserDevice(BaseDatabaseModel):
     device              = ForeignKeyField(Device,
-                                          backref="groups",
+                                          backref="users",
                                           on_delete="CASCADE")
-    group               = ForeignKeyField(Group,
+    user                = ForeignKeyField(User,
                                           backref="devices",
                                           on_delete="CASCADE")
 

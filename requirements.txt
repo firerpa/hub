@@ -21,3 +21,4 @@ mitmproxy>=9.0.0,<=10.2.0
 dnspython
 httpx[socks]
 packaging
+paho-mqtt

@@ -10,11 +10,6 @@ echo -e "\033[1;31m  \___  /   |__||__|    \___  >____|_  /|____|  \____|__  / \
 echo -e "\033[1;31m      \/                    \/       \/                 \/  \033[0m"
 echo -e "\033[0;32m                                                  server    \033[0m"
 
-if [ "${ADDR}"L = ""L ]; then
-echo "No ADDR Specified, please provide this computer IP"
-exit 8
-fi
-
 LISTENCONF=${OPENRESTY}/nginx/conf/listen.conf
 CONTRLCONF=${OPENRESTY}/nginx/conf/listen-control.conf
 
@@ -32,13 +27,25 @@ value=$(echo $value | xargs)
 export "$key=$value"
 done < /user/environment
 fi
+
+variables=("TOP_ENDPOINT" "TOP_CLIENT_KEY" "TOP_SECRET")
+for var in "${variables[@]}"; do if [ -z "${!var}" ]; then echo "Error: environment $var not set"; exit 10; fi; done
+
 capabilities=$(grep CapEff /proc/$$/status | cut -f2)
 if [ $(( (0x$capabilities & (1 << 21)) != 0 )) -eq 0 ]; then
 echo "Container is NOT running in privileged mode."
 exit 8
 fi
+if [ -f /user/server.crt ] && [ -f /user/server.key ]; then
+echo "listen ${WEB_PORT:-8000} ssl;"         > ${LISTENCONF}
+echo "http2  on;"                            >>${LISTENCONF}
+echo "ssl_certificate /user/server.crt;"     >>${LISTENCONF}
+echo "ssl_certificate_key /user/server.key;" >>${LISTENCONF}
+export HTTPS=1
+else
 echo "listen ${WEB_PORT:-8000};"             > ${LISTENCONF}
-
+export HTTPS=0
+fi
 echo "listen ${API_PORT:-65000};"            > ${CONTRLCONF}
 echo "server_name ${DOMAIN:-firerpa.local};" >>${LISTENCONF}
 exec supervisord $@

@@ -1,0 +1,129 @@
+diff --git a/Makefile b/Makefile
+index 12bc2cc..50c2590 100644
+--- a/Makefile
++++ b/Makefile
+@@ -138,7 +138,6 @@ LDFLAGS := $(CFG_LDFLAGS)
+ LDFLAGS += $(BE_LDFLAGS) -L$(MOSQUITTO_SRC)/lib/
+ # LDFLAGS += -Wl,-rpath,$(../../../../pubgit/MQTT/mosquitto/lib) -lc
+ # LDFLAGS += -export-dynamic
+-LDADD = $(BE_LDADD) $(OSSLIBS) -lmosquitto
+ 
+ all: printconfig auth-plug.so np
+ 
+@@ -157,7 +156,7 @@ printconfig:
+ 
+ 
+ auth-plug.so : $(OBJS) $(BE_DEPS)
+-	$(CC) $(CFLAGS) $(LDFLAGS) -fPIC -shared -o $@ $(OBJS) $(BE_DEPS) $(LDADD)
++	$(CC) $(CFLAGS) -fPIC -shared -o $@ $(OBJS) $(BE_DEPS) $(LDFLAGS) $(LDADD)
+ 
+ be-redis.o: be-redis.c be-redis.h log.h hash.h envs.h Makefile
+ be-memcached.o: be-memcached.c be-memcached.h log.h hash.h envs.h Makefile
+diff --git a/auth-plug.c b/auth-plug.c
+index 3456ba0..699e292 100644
+--- a/auth-plug.c
++++ b/auth-plug.c
+@@ -499,7 +499,7 @@ int mosquitto_auth_security_cleanup(void *userdata, struct mosquitto_auth_opt *a
+ 
+ 
+ #if MOSQ_AUTH_PLUGIN_VERSION >=3
+-int mosquitto_auth_unpwd_check(void *userdata, const struct mosquitto *client, const char *username, const char *password)
++int mosquitto_auth_unpwd_check(void *userdata, struct mosquitto *client, const char *username, const char *password)
+ #else
+ int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char *password)
+ #endif
+@@ -594,7 +594,7 @@ int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char
+ }
+ 
+ #if MOSQ_AUTH_PLUGIN_VERSION >= 3
+-int mosquitto_auth_acl_check(void *userdata, int access, const struct mosquitto *client, const struct mosquitto_acl_msg *msg)
++int mosquitto_auth_acl_check(void *userdata, int access, struct mosquitto *client, const struct mosquitto_acl_msg *msg)
+ #else
+ int mosquitto_auth_acl_check(void *userdata, const char *clientid, const char *username, const char *topic, int access)
+ #endif
+@@ -745,7 +745,7 @@ int mosquitto_auth_acl_check(void *userdata, const char *clientid, const char *u
+ 
+ 
+ #if MOSQ_AUTH_PLUGIN_VERSION >= 3
+-int mosquitto_auth_psk_key_get(void *userdata, const struct mosquitto *client, const char *hint, const char *identity, char *key, int max_key_len)
++int mosquitto_auth_psk_key_get(void *userdata, struct mosquitto *client, const char *hint, const char *identity, char *key, int max_key_len)
+ #else
+ int mosquitto_auth_psk_key_get(void *userdata, const char *hint, const char *identity, char *key, int max_key_len)
+ #endif
+diff --git a/be-http.c b/be-http.c
+index be05ad4..6a98bd5 100644
+--- a/be-http.c
++++ b/be-http.c
+@@ -124,7 +124,7 @@ static int http_post(void *handle, char *uri, const char *clientid, const char *
+ 
+ 	//_log(LOG_NOTICE, "u=%s p=%s t=%s acc=%d", username, password, topic, acc);
+ 
+-	url = (char *)malloc(strlen(conf->hostname) + strlen(uri) + 20);
++	url = (char *)malloc(strlen(conf->unixsocket) + strlen(uri) + 20);
+ 	if (url == NULL) {
+ 		_fatal("ENOMEM");
+ 		return BACKEND_ERROR;
+@@ -132,9 +132,9 @@ static int http_post(void *handle, char *uri, const char *clientid, const char *
+ 
+ 	// enable the https
+ 	if (strcmp(conf->with_tls, "true") == 0){
+-		sprintf(url, "https://%s:%d%s", conf->hostname, conf->port, uri);
++		sprintf(url, "https://unixsocket%s", uri);
+ 	}else{
+-		sprintf(url, "http://%s:%d%s", conf->hostname, conf->port, uri);
++		sprintf(url, "http://unixsocket%s", uri);
+ 	}
+ 
+ 	char* escaped_username = curl_easy_escape(curl, username, 0);
+@@ -185,6 +185,7 @@ static int http_post(void *handle, char *uri, const char *clientid, const char *
+ 	// curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+ 
+ 	curl_easy_setopt(curl, CURLOPT_URL, url);
++	curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, conf->unixsocket);
+ 	curl_easy_setopt(curl, CURLOPT_POST, 1L);
+ 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+ 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist);
+@@ -223,7 +224,7 @@ static int http_post(void *handle, char *uri, const char *clientid, const char *
+ void *be_http_init()
+ {
+ 	struct http_backend *conf;
+-	char *hostname;
++	char *unixsocket;
+ 	char *getuser_uri;
+ 	char *superuser_uri;
+ 	char *aclcheck_uri;
+@@ -233,8 +234,8 @@ void *be_http_init()
+ 		return (NULL);
+ 	}
+ 
+-	if ((hostname = p_stab("http_ip")) == NULL && (hostname = p_stab("http_hostname")) == NULL) {
+-		_fatal("Mandatory parameter: one of either `http_ip' or `http_hostname' required");
++	if ((unixsocket = p_stab("http_unix")) == NULL) {
++		_fatal("Mandatory parameter: `http_unix' missing.");
+ 		return (NULL);
+ 	}
+ 	if ((getuser_uri = p_stab("http_getuser_uri")) == NULL) {
+@@ -251,8 +252,7 @@ void *be_http_init()
+ 	}
+ 
+ 	conf = (struct http_backend *)malloc(sizeof(struct http_backend));
+-	conf->hostname = hostname;
+-	conf->port = p_stab("http_port") == NULL ? 80 : atoi(p_stab("http_port"));
++	conf->unixsocket = unixsocket;
+ 	if (p_stab("http_hostname") != NULL) {
+ 		conf->hostheader = (char *)malloc(128);
+ 		sprintf(conf->hostheader, "Host: %s", p_stab("http_hostname"));
+diff --git a/be-http.h b/be-http.h
+index 2590412..212cf42 100644
+--- a/be-http.h
++++ b/be-http.h
+@@ -34,8 +34,7 @@
+ #define METHOD_ACLCHECK  3
+ 
+ struct http_backend {
+-	char *hostname;
+-	int port;
++	char *unixsocket;
+ 	char *hostheader;
+ 	char *getuser_uri;
+ 	char *superuser_uri;

@@ -3,22 +3,31 @@ set -ex
 cd $(dirname $0)
 
 pip install --break-system-packages -r requirements.txt
+pip install --break-system-packages driver-1.0.0-cp311-cp311-linux_x86_64.whl
 
 # build server distribute
 pushd $(pwd)
 cd server
 export PATH=${OPENRESTY}/luajit/bin:$PATH
 
-cp script/ngx_novnc.lua ${OPENRESTY}/nginx/ngx_novnc.lua
-cp script/ngx_validate.lua ${OPENRESTY}/nginx/ngx_validate.lua
-cp script/ngx_control.lua ${OPENRESTY}/nginx/ngx_control.lua
+luajit -b script/ngx_novnc.lua ${OPENRESTY}/nginx/ngx_novnc.luac
+luajit -b script/ngx_validate.lua ${OPENRESTY}/nginx/ngx_validate.luac
+luajit -b script/ngx_control.lua ${OPENRESTY}/nginx/ngx_control.luac
+
+cythonize -b -i                 models.py
+cythonize -b -i                 utils.py
+cythonize -b -i                 service.py
+strip -s *.so
 
 rm $0
 rm -rf script/
+rm {models,utils,service}.{py,c}
 popd
 
 mv server/start.sh /usr/bin
 cp -pr server /usr/lib/python3/dist-packages
+
+cp -pr mosquitto.conf /etc/mosquitto
 
 cat <<EOL >/etc/supervisord.conf
 [unix_http_server]
@@ -63,6 +72,18 @@ stdout_logfile_backups  = 0
 startsecs               = 10
 startretries            = 10000
 priority                = 100
+
+[program:mosquitto]
+command                 = mosquitto -c /etc/mosquitto/mosquitto.conf
+autostart               = true
+autorestart             = true
+redirect_stderr         = true
+stdout_logfile          = /dev/stdout
+stdout_logfile_maxbytes = 0
+stdout_logfile_backups  = 0
+startsecs               = 10
+startretries            = 10000
+priority                = 5000
 
 [program:openresty]
 command                 = /usr/local/openresty/bin/openresty

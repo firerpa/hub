@@ -1,1 +1,0 @@
-import{_ as t}from"./chunk-3acec7f8.js";function r(e){return t.get("/v1/device",e)}function c(e,n){return t.putForm("/v1/device/"+e+"/comment",{comment:n})}function d(e){return t.delete("/v1/device/"+e)}function i(e){return t.postForm("/v1/device",{ip:e})}export{i as a,c,d,r as g};

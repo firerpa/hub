@@ -5,7 +5,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-n", "--name", type=str,
-                        help="groupname", required=True)
+                        help="username", required=True)
 parser.add_argument("-p", "--password", type=str,
                         help="password", required=True)
 parser.add_argument("-c", "--contact", type=str,
@@ -21,7 +21,7 @@ meta = (args.name, args.contact, args.password,
         time.time(), 0, args.password,
         int(args.admin))
 
-cursor.execute("INSERT INTO `group` ("
+cursor.execute("INSERT INTO `user` ("
                                         "name,"
                                         "contact,"
                                         "password,"

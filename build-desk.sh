@@ -18,18 +18,18 @@ echo 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS -no-sandbox --test-type --disable-d
 # upgrade websockify
 pip install --break-system-packages -U --force-reinstall websockify==0.12.0
 
-## vscode
-#apt install -y software-properties-common apt-transport-https wget gpg
-#wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/packages.microsoft.gpg
-#echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-#chmod 644 /usr/share/keyrings/packages.microsoft.gpg
+# vscode
+apt install -y software-properties-common apt-transport-https wget gpg
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/packages.microsoft.gpg
+echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+chmod 644 /usr/share/keyrings/packages.microsoft.gpg
 
-#apt update
-#apt install -y code
-## allow root to run vscode
-#sed -i '2i set -- --no-sandbox --disable-gpu --user-data-dir=/user/.vscode "$@"' /usr/share/code/bin/code
-#sed -i 's,/usr/share/code/code,/usr/share/code/bin/code,g' /usr/share/applications/code.desktop
-## finish
+apt update
+apt install -y code
+# allow root to run vscode
+sed -i '2i set -- --no-sandbox --disable-gpu --user-data-dir=/user/.vscode "$@"' /usr/share/code/bin/code
+sed -i 's,/usr/share/code/code,/usr/share/code/bin/code,g' /usr/share/applications/code.desktop
+# finish
 
 # desktop init script
 cat <<EOL >/usr/bin/desktop-init.sh
