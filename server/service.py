@@ -700,6 +700,7 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         """在后台异步执行脚本"""
         # 记录任务开始状态
         running_tasks[task_id] = {
+            "script_path": script_path,
             "status": "running",
             "devices": devices,
             "start_date": format_china_time(time.time()),
@@ -719,6 +720,7 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
             
             # 更新任务完成状态
             running_tasks[task_id].update({
+                "script_path": script_path,
                 "status": "completed",
                 "result": {
                     "return_code": result.returncode,
@@ -732,6 +734,7 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         except subprocess.TimeoutExpired:
             # 即使超时也记录状态
             running_tasks[task_id].update({
+                "script_path": script_path,
                 "status": "timeout",
                 "result": {
                     "error": "Script execution timed out"
