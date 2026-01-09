@@ -661,6 +661,7 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         try:
             json_data = json.loads(self.request.body.decode())
             devices = json_data.get("devices", [])
+            data = json_data.get("data", {})
         except json.JSONDecodeError:
             self.throw(400, "E40000", "Invalid JSON format in request body")
         
@@ -678,26 +679,11 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         
         # 检查脚本是否存在
         if not os.path.exists(script_path):
-            self.throw(404, "E40402", f"Script {script_name}.py does not exist")
+            self.throw(404, "E40406", f"Script {script_name}.py does not exist")
         
         # 创建任务ID
         task_id = str(uuid.uuid4())
-        
-        # 异步启动脚本执行
-        asyncio.create_task(self._execute_script_async(task_id, script_path, devices))
-        
-        # 立即返回任务ID，不等待脚本执行完成
-        response = {
-            "status": 0,
-            "message": f"Script {script_name} started successfully",
-            "task_id": task_id,
-            "devices": devices
-        }
-        
-        self.tell(response)
-    
-    async def _execute_script_async(self, task_id, script_path, devices):
-        """在后台异步执行脚本"""
+
         # 记录任务开始状态
         running_tasks[task_id] = {
             "script_path": script_path,
@@ -708,6 +694,22 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
             "result": None
         }
         
+        # 异步启动脚本执行
+        asyncio.create_task(self._execute_script_async(task_id, script_path, devices, data))
+        
+        # 立即返回任务ID，不等待脚本执行完成
+        response = {
+            "status": 0,
+            "message": f"Script {script_name} started successfully",
+            "task_id": task_id,
+            "devices": devices,
+            "data": running_tasks
+        }
+        
+        self.tell(response)
+    
+    async def _execute_script_async(self, task_id, script_path, devices, data):
+        """在后台异步执行脚本"""
         try:
             # 使用线程池在后台执行脚本
             loop = asyncio.get_event_loop()
@@ -715,7 +717,8 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
                 self.executor, 
                 self._run_subprocess, 
                 script_path, 
-                devices
+                devices,
+                data
             )
             
             # 更新任务完成状态
@@ -753,16 +756,21 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
                 "end_time": time.time()
             })
     
-    def _run_subprocess(self, script_path, devices):
+    def _run_subprocess(self, script_path, devices, data):
         """在单独线程中运行子进程，无超时限制"""
-        cmd = ["python3", script_path] + devices
+        cmd = ["python3", script_path]
+
+        # 通过环境变量传递数据
+        env = os.environ.copy()
+        env['SCRIPT_DATA'] = json.dumps(data)
+        env['DEVICES'] = json.dumps(devices)
         
         # 执行脚本，无超时限制
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            # 不设置timeout参数，让脚本可以无限运行
+            env=env
         )
         
         return result
@@ -784,14 +792,22 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
             for task_id in list(running_tasks.keys()):
                 if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
                     del running_tasks[task_id]
-            self.tell({"status": 0, "message": "All completed tasks cleaned up"})
+            self.tell({
+                "status": 0,
+                "message": "All completed tasks cleaned up",
+                "data": running_tasks
+            })
             return
         
         if task_id in running_tasks:
             # 检查任务是否已完成
             if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
                 del running_tasks[task_id]
-                self.tell({"status": 0, "message": f"Task {task_id} cleaned up"})
+                self.tell({
+                    "status": 0, 
+                    "message": f"Task {task_id} cleaned up",
+                    "data": running_tasks
+                })
             else:
                 self.throw(400, "E40000", "Cannot delete running task")
         else:
