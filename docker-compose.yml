@@ -3,7 +3,7 @@ version: "3"
 services:
         firerpa:
                 container_name: firerpa
-                image: hub:latest
+                image: hub-test:latest
                 network_mode: host
                 privileged: true
                 volumes:
@@ -12,9 +12,9 @@ services:
                         - DOMAIN=firerpa.local
                         - WEB_PORT=8000
                         - API_PORT=65000
-                        - TOP_ENDPOINT=
-                        - TOP_CLIENT_KEY=
-                        - TOP_SECRET=
+                        - TOP_ENDPOINT=http://1.14.77.17:9000
+                        - TOP_CLIENT_KEY=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt7sua00epoEei0VpEx8T1BkgSUmQ1Ivo2CBhQg/YyQrzmcz9lesHhyp9o4Qk/KVipVh9bjXxG/GEELoyZ3YbKmUGebvzjO/z+matbxZpe39PCotbw7V8Cvl8IuU+4X8blub3ylL2YEXWiVkvD2QxwrnBwNOlEulmBnDBpde+3OpxbTG4zGt/+5OdzW5Jf2d4fLVZ/aFda/H7LNnEQXxIYmZQtc81acLgbM4DoDuN8+pvzshKHSRBciSAZMWhcFLmzenrUGf714M7UKGIiNJzBiva5u5HWjp2wFpmLUptRaR7muly5KOaXXhG72BALXGYUkGFsX+fWSc81Y6fFF28XQIDAQAB
+                        - TOP_SECRET=qtmlwksimnlzbhfchumnatpwnsumhwbv
                 ports:
                         - 8000:8000
                         - 65000:65000

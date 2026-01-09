@@ -6,6 +6,8 @@ apt install -y sudo inetutils-ping net-tools locales xfce4 xfce4-terminal dbus-x
 sed -i "s,UI.getSetting('resize'),'scale',g" /usr/share/novnc/app/ui.js
 sed -i "s,autoconnect === 'true',1,g" /usr/share/novnc/app/ui.js
 
+mkdir -p /user/code
+
 # install chromium
 apt install -y chromium ttf-wqy*
 
@@ -82,7 +84,7 @@ startretries            = 10000
 priority                = 100
 
 [program:x11vnc]
-command                 = x11vnc -display "%(ENV_DISPLAY)s" -xkb -forever -xrandr newfbsize -capslock -unixsock /run/x11vnc.sock -rfbport 0 -rfbportv6 0
+command                 = x11vnc -display "%(ENV_DISPLAY)s" -xkb -forever -shared -xrandr newfbsize -capslock -unixsock /run/x11vnc.sock -rfbport 0 -rfbportv6 0
 autostart               = true
 autorestart             = true
 redirect_stderr         = true

@@ -31,6 +31,8 @@ from base64 import b64encode
 from collections import OrderedDict
 from urllib.parse import urlparse
 from collections import Counter
+import datetime
+from datetime import timezone
 
 from tornado.ioloop import IOLoop
 from tornado.options import define, options
@@ -38,7 +40,7 @@ from tornado.web import Application, HTTPError
 from tornado.websocket import WebSocketHandler
 from tornado.netutil import bind_unix_socket
 from tornado.httpserver import HTTPServer
-
+from concurrent.futures import ThreadPoolExecutor
 from driver.bridge import TopClient
 
 from . import __version__
@@ -633,6 +635,164 @@ class MqttClientAclAuthHandler(BaseHttpService):
     def post(self):
         return # NO ACL BUT SHOULD
 
+# 全局任务存储
+running_tasks = {}
+
+
+def format_china_time(timestamp):
+    """将时间戳转换为格式化的中国时间字符串"""
+    # 将时间戳转换为UTC时间
+    utc_time = datetime.datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    # 转换为中国时间（UTC+8）
+    china_time = utc_time.astimezone(timezone(datetime.timedelta(hours=8)))
+    # 格式化为字符串
+    return china_time.strftime("%Y-%m-%d %H:%M:%S")
+
+class PlatformDeviceBatchScriptHandler(BaseHttpService):
+    def initialize(self, *args, **kwargs):
+        super().initialize(*args, **kwargs)
+        # 创建一个线程池执行器用于运行长时间任务
+        self.executor = ThreadPoolExecutor(max_workers=4)
+    
+    async def post(self, script_name):
+        user = self.get_login_user_admin()
+        
+        # 从请求体获取JSON数据
+        try:
+            json_data = json.loads(self.request.body.decode())
+            devices = json_data.get("devices", [])
+        except json.JSONDecodeError:
+            self.throw(400, "E40000", "Invalid JSON format in request body")
+        
+        if not devices:
+            self.throw(400, "E40000", "No devices specified in request body")
+        
+        # 验证所有设备都存在且属于当前用户
+        for domain in devices:
+            if not isinstance(domain, str):
+                self.throw(400, "E40000", "Device domains must be strings")
+            self.get_login_user_device(domain)
+        
+        # 脚本路径
+        script_path = f"/user/code/{script_name}.py"
+        
+        # 检查脚本是否存在
+        if not os.path.exists(script_path):
+            self.throw(404, "E40402", f"Script {script_name}.py does not exist")
+        
+        # 创建任务ID
+        task_id = str(uuid.uuid4())
+        
+        # 异步启动脚本执行
+        asyncio.create_task(self._execute_script_async(task_id, script_path, devices))
+        
+        # 立即返回任务ID，不等待脚本执行完成
+        response = {
+            "status": 0,
+            "message": f"Script {script_name} started successfully",
+            "task_id": task_id,
+            "devices": devices
+        }
+        
+        self.tell(response)
+    
+    async def _execute_script_async(self, task_id, script_path, devices):
+        """在后台异步执行脚本"""
+        # 记录任务开始状态
+        running_tasks[task_id] = {
+            "status": "running",
+            "devices": devices,
+            "start_date": format_china_time(time.time()),
+            "start_time": time.time(),
+            "result": None
+        }
+        
+        try:
+            # 使用线程池在后台执行脚本
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.executor, 
+                self._run_subprocess, 
+                script_path, 
+                devices
+            )
+            
+            # 更新任务完成状态
+            running_tasks[task_id].update({
+                "status": "completed",
+                "result": {
+                    "return_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr
+                },
+                "end_date": format_china_time(time.time()),
+                "end_time": time.time()
+            })
+            
+        except subprocess.TimeoutExpired:
+            # 即使超时也记录状态
+            running_tasks[task_id].update({
+                "status": "timeout",
+                "result": {
+                    "error": "Script execution timed out"
+                },
+                "end_date": format_china_time(time.time()),
+                "end_time": time.time()
+            })
+        except Exception as e:
+            # 记录执行错误
+            running_tasks[task_id].update({
+                "status": "error",
+                "result": {
+                    "error": str(e)
+                },
+                "end_date": format_china_time(time.time()),
+                "end_time": time.time()
+            })
+    
+    def _run_subprocess(self, script_path, devices):
+        """在单独线程中运行子进程，无超时限制"""
+        cmd = ["python3", script_path] + devices
+        
+        # 执行脚本，无超时限制
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            # 不设置timeout参数，让脚本可以无限运行
+        )
+        
+        return result
+
+# 添加一个获取任务状态的处理器
+class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
+    async def get(self):
+        user = self.get_login_user_admin()
+        
+        self.tell({"status": 0, "data": running_tasks})
+    
+    async def delete(self):
+        """清理已完成的任务"""
+        user = self.get_login_user_admin()
+        
+        task_id = self.get_argument("task_id", None)
+        
+        if task_id is None:
+            for task_id in list(running_tasks.keys()):
+                if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
+                    del running_tasks[task_id]
+            self.tell({"status": 0, "message": "All completed tasks cleaned up"})
+            return
+        
+        if task_id in running_tasks:
+            # 检查任务是否已完成
+            if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
+                del running_tasks[task_id]
+                self.tell({"status": 0, "message": f"Task {task_id} cleaned up"})
+            else:
+                self.throw(400, "E40000", "Cannot delete running task")
+        else:
+            self.throw(404, "E40402", f"Task {task_id} not found")
 
 class Service(object):
     def __init__(self, path="/run/server.sock"):
@@ -686,6 +846,15 @@ class Service(object):
         # GET, POST
         http.add_handler("/api/v1/user", "server.service",
                         handler="PlatformUserHandler")
+        # POST - 批量脚本执行
+        http.add_handler("/api/v1/device/batch/([a-z0-9]+)/script", "server.service",
+                handler="PlatformDeviceBatchScriptHandler")
+        # GET - 批量脚本状态查询
+        http.add_handler("/api/v1/device/batch/task", "server.service",
+                handler="PlatformDeviceBatchScriptStatusHandler")
+        # DELETE - 清理任务
+        http.add_handler("/api/v1/device/batch/task/([a-z0-9]+)", "server.service",
+                handler="PlatformDeviceBatchScriptStatusHandler")
         self.http = http
     def exited(self, bridge):
         os._exit(bridge.exitCode)
