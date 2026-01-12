@@ -3,7 +3,7 @@ version: "3"
 services:
         firerpa:
                 container_name: firerpa
-                image: hub-test:latest
+                image: hub:latest
                 network_mode: host
                 privileged: true
                 volumes:

@@ -24,6 +24,8 @@ import cachetools.func
 import threading
 import traceback
 import redis
+import signal
+import psutil
 
 from ipaddress import ip_network
 from hashlib import sha256
@@ -691,7 +693,8 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
             "devices": devices,
             "start_date": format_china_time(time.time()),
             "start_time": time.time(),
-            "result": None
+            "result": None,
+            "process": None  # 用于存储进程对象
         }
         
         # 异步启动脚本执行
@@ -716,48 +719,52 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
             result = await loop.run_in_executor(
                 self.executor, 
                 self._run_subprocess, 
+                task_id,  # 传递task_id以便跟踪进程
                 script_path, 
                 devices,
                 data
             )
             
             # 更新任务完成状态
-            running_tasks[task_id].update({
-                "script_path": script_path,
-                "status": "completed",
-                "result": {
-                    "return_code": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr
-                },
-                "end_date": format_china_time(time.time()),
-                "end_time": time.time()
-            })
+            if task_id in running_tasks:  # 检查任务是否已被取消
+                running_tasks[task_id].update({
+                    "script_path": script_path,
+                    "status": "completed",
+                    "result": {
+                        "return_code": result.returncode,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr
+                    },
+                    "end_date": format_china_time(time.time()),
+                    "end_time": time.time()
+                })
             
         except subprocess.TimeoutExpired:
             # 即使超时也记录状态
-            running_tasks[task_id].update({
-                "script_path": script_path,
-                "status": "timeout",
-                "result": {
-                    "error": "Script execution timed out"
-                },
-                "end_date": format_china_time(time.time()),
-                "end_time": time.time()
-            })
+            if task_id in running_tasks:
+                running_tasks[task_id].update({
+                    "script_path": script_path,
+                    "status": "timeout",
+                    "result": {
+                        "error": "Script execution timed out"
+                    },
+                    "end_date": format_china_time(time.time()),
+                    "end_time": time.time()
+                })
         except Exception as e:
             # 记录执行错误
-            running_tasks[task_id].update({
-                "status": "error",
-                "result": {
-                    "error": str(e)
-                },
-                "end_date": format_china_time(time.time()),
-                "end_time": time.time()
-            })
+            if task_id in running_tasks:
+                running_tasks[task_id].update({
+                    "status": "error",
+                    "result": {
+                        "error": str(e)
+                    },
+                    "end_date": format_china_time(time.time()),
+                    "end_time": time.time()
+                })
     
-    def _run_subprocess(self, script_path, devices, data):
-        """在单独线程中运行子进程，无超时限制"""
+    def _run_subprocess(self, task_id, script_path, devices, data):
+        """在单独线程中运行子进程，支持外部中断"""
         cmd = ["python3", script_path]
 
         # 通过环境变量传递数据
@@ -765,12 +772,37 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         env['SCRIPT_DATA'] = json.dumps(data)
         env['DEVICES'] = json.dumps(devices)
         
-        # 执行脚本，无超时限制
-        result = subprocess.run(
+        # 启动子进程并保存进程引用
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             env=env
+        )
+        
+        # 更新任务信息，添加进程引用
+        if task_id in running_tasks:
+            running_tasks[task_id]['process'] = process
+        
+        try:
+            # 等待进程完成
+            stdout, stderr = process.communicate()
+        except KeyboardInterrupt:
+            # 处理中断信号
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=5)
+        
+        # 移除进程引用
+        if task_id in running_tasks:
+            running_tasks[task_id]['process'] = None
+        
+        # 返回结果
+        result = subprocess.CompletedProcess(
+            args=cmd,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr
         )
         
         return result
@@ -783,12 +815,13 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
         self.tell({"status": 0, "data": running_tasks})
     
     async def delete(self):
-        """清理已完成的任务"""
+        """清理任务 - 可以停止运行中的任务或删除已完成的任务"""
         user = self.get_login_user_admin()
         
         task_id = self.get_argument("task_id", None)
         
         if task_id is None:
+            # 清理所有已完成的任务
             for task_id in list(running_tasks.keys()):
                 if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
                     del running_tasks[task_id]
@@ -800,8 +833,18 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
             return
         
         if task_id in running_tasks:
-            # 检查任务是否已完成
-            if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
+            task_info = running_tasks[task_id]
+            
+            if task_info["status"] == "running":
+                # 停止正在运行的任务
+                await self._stop_running_task(task_id)
+                self.tell({
+                    "status": 0, 
+                    "message": f"Task {task_id} has been stopped",
+                    "data": running_tasks
+                })
+            elif task_info["status"] in ["completed", "error", "timeout"]:
+                # 删除已完成的任务
                 del running_tasks[task_id]
                 self.tell({
                     "status": 0, 
@@ -809,9 +852,39 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
                     "data": running_tasks
                 })
             else:
-                self.throw(400, "E40000", "Cannot delete running task")
+                self.throw(400, "E40000", f"Unknown task status: {task_info['status']}")
         else:
             self.throw(404, "E40402", f"Task {task_id} not found")
+
+    async def _stop_running_task(self, task_id):
+        """停止正在运行的任务"""
+        if task_id in running_tasks:
+            task_info = running_tasks[task_id]
+            
+            # 如果有正在运行的进程，尝试终止它
+            if 'process' in task_info and task_info['process']:
+                process = task_info['process']
+                try:
+                    # 尝试优雅地终止进程
+                    proc = psutil.Process(process.pid)
+                    proc.terminate()  # 发送SIGTERM信号
+                    try:
+                        proc.wait(timeout=5)  # 等待进程结束，最多等待5秒
+                    except psutil.TimeoutExpired:
+                        proc.kill()  # 如果没有正常退出，则强制杀死
+                except psutil.NoSuchProcess:
+                    pass  # 进程已经不存在
+            
+            # 更新任务状态为已取消
+            task_info.update({
+                "status": "cancelled",
+                "result": {
+                    "error": "Task was cancelled by user"
+                },
+                "end_date": format_china_time(time.time()),
+                "end_time": time.time()
+            })
+
 
 class Service(object):
     def __init__(self, path="/run/server.sock"):
