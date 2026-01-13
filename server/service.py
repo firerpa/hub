@@ -812,8 +812,24 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
     async def get(self):
         user = self.get_login_user_admin()
         
-        self.tell({"status": 0, "data": running_tasks})
-    
+        # 创建可序列化的任务副本
+        serializable_tasks = {}
+        for task_id, task_info in running_tasks.items():
+            # 复制任务信息并移除不可序列化的字段
+            task_copy = task_info.copy()
+            if 'process' in task_copy:
+                # 将进程对象转换为可序列化的信息
+                if task_copy['process'] is not None:
+                    process_obj = task_copy['process']
+                    task_copy['process_info'] = {
+                        'pid': process_obj.pid,
+                        'is_running': process_obj.poll() is None,  # 检查进程是否仍在运行
+                    }
+                del task_copy['process']  # 删除不可序列化的进程对象
+            
+            serializable_tasks[task_id] = task_copy
+        
+        self.tell({"status": 0, "data": serializable_tasks})
     async def delete(self):
         """清理任务 - 可以停止运行中的任务或删除已完成的任务"""
         user = self.get_login_user_admin()
