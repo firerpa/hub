@@ -725,6 +725,10 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
                 data
             )
             
+            if task_id in running_tasks:
+                if running_tasks[task_id]["status"] == "cancelled":
+                    return
+            
             # 更新任务完成状态
             if task_id in running_tasks:  # 检查任务是否已被取消
                 running_tasks[task_id].update({
@@ -839,12 +843,28 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
         if task_id is None:
             # 清理所有已完成的任务
             for task_id in list(running_tasks.keys()):
-                if running_tasks[task_id]["status"] in ["completed", "error", "timeout"]:
+                if running_tasks[task_id]["status"] in ["completed", "error", "timeout", "cancelled"]:
                     del running_tasks[task_id]
+            # 创建可序列化的任务副本
+            serializable_tasks = {}
+            for task_id, task_info in running_tasks.items():
+                # 复制任务信息并移除不可序列化的字段
+                task_copy = task_info.copy()
+                if 'process' in task_copy:
+                    # 将进程对象转换为可序列化的信息
+                    if task_copy['process'] is not None:
+                        process_obj = task_copy['process']
+                        task_copy['process_info'] = {
+                            'pid': process_obj.pid,
+                            'is_running': process_obj.poll() is None,  # 检查进程是否仍在运行
+                        }
+                    del task_copy['process']  # 删除不可序列化的进程对象
+                
+                serializable_tasks[task_id] = task_copy
             self.tell({
                 "status": 0,
                 "message": "All completed tasks cleaned up",
-                "data": running_tasks
+                "data": serializable_tasks
             })
             return
         
@@ -859,7 +879,7 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
                     "message": f"Task {task_id} has been stopped",
                     "data": running_tasks
                 })
-            elif task_info["status"] in ["completed", "error", "timeout"]:
+            elif task_info["status"] in ["completed", "error", "timeout", "cancelled"]:
                 # 删除已完成的任务
                 del running_tasks[task_id]
                 self.tell({
@@ -885,7 +905,7 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
                     proc = psutil.Process(process.pid)
                     proc.terminate()  # 发送SIGTERM信号
                     try:
-                        proc.wait(timeout=5)  # 等待进程结束，最多等待5秒
+                        proc.wait(timeout=60)  # 等待进程结束，最多等待5秒
                     except psutil.TimeoutExpired:
                         proc.kill()  # 如果没有正常退出，则强制杀死
                 except psutil.NoSuchProcess:
@@ -895,7 +915,9 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
             task_info.update({
                 "status": "cancelled",
                 "result": {
-                    "error": "Task was cancelled by user"
+                    "return_code": 1,
+                    "stdout": "Task was cancelled by user",
+                    "stderr": "Task was cancelled by user"
                 },
                 "end_date": format_china_time(time.time()),
                 "end_time": time.time()
