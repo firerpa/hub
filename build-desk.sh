@@ -6,8 +6,6 @@ apt install -y sudo inetutils-ping net-tools locales xfce4 xfce4-terminal dbus-x
 sed -i "s,UI.getSetting('resize'),'scale',g" /usr/share/novnc/app/ui.js
 sed -i "s,autoconnect === 'true',1,g" /usr/share/novnc/app/ui.js
 
-mkdir -p /user/code
-
 # install chromium
 apt install -y chromium ttf-wqy*
 
