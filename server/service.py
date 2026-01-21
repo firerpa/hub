@@ -650,6 +650,26 @@ def format_china_time(timestamp):
     # 格式化为字符串
     return china_time.strftime("%Y-%m-%d %H:%M:%S")
 
+def get_tasks():
+    # 创建可序列化的任务副本
+    serializable_tasks = {}
+    for task_id, task_info in running_tasks.items():
+        # 复制任务信息并移除不可序列化的字段
+        task_copy = task_info.copy()
+        if 'process' in task_copy:
+            # 将进程对象转换为可序列化的信息
+            if task_copy['process'] is not None:
+                process_obj = task_copy['process']
+                task_copy['process_info'] = {
+                    'pid': process_obj.pid,
+                    'is_running': process_obj.poll() is None,  # 检查进程是否仍在运行
+                }
+            del task_copy['process']  # 删除不可序列化的进程对象
+        
+        serializable_tasks[task_id] = task_copy
+    
+    return serializable_tasks
+
 class PlatformDeviceBatchScriptHandler(BaseHttpService):
     def initialize(self, *args, **kwargs):
         super().initialize(*args, **kwargs)
@@ -700,13 +720,14 @@ class PlatformDeviceBatchScriptHandler(BaseHttpService):
         # 异步启动脚本执行
         asyncio.create_task(self._execute_script_async(task_id, script_path, devices, data))
         
+        tasks = get_tasks()
         # 立即返回任务ID，不等待脚本执行完成
         response = {
             "status": 0,
             "message": f"Script {script_name} started successfully",
             "task_id": task_id,
             "devices": devices,
-            "data": running_tasks
+            "data": tasks
         }
         
         self.tell(response)
@@ -816,24 +837,9 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
     async def get(self):
         user = self.get_login_user_admin()
         
-        # 创建可序列化的任务副本
-        serializable_tasks = {}
-        for task_id, task_info in running_tasks.items():
-            # 复制任务信息并移除不可序列化的字段
-            task_copy = task_info.copy()
-            if 'process' in task_copy:
-                # 将进程对象转换为可序列化的信息
-                if task_copy['process'] is not None:
-                    process_obj = task_copy['process']
-                    task_copy['process_info'] = {
-                        'pid': process_obj.pid,
-                        'is_running': process_obj.poll() is None,  # 检查进程是否仍在运行
-                    }
-                del task_copy['process']  # 删除不可序列化的进程对象
-            
-            serializable_tasks[task_id] = task_copy
+        tasks = get_tasks()
         
-        self.tell({"status": 0, "data": serializable_tasks})
+        self.tell({"status": 0, "data": tasks})
     async def delete(self):
         """清理任务 - 可以停止运行中的任务或删除已完成的任务"""
         user = self.get_login_user_admin()
@@ -845,26 +851,13 @@ class PlatformDeviceBatchScriptStatusHandler(BaseHttpService):
             for task_id in list(running_tasks.keys()):
                 if running_tasks[task_id]["status"] in ["completed", "error", "timeout", "cancelled"]:
                     del running_tasks[task_id]
-            # 创建可序列化的任务副本
-            serializable_tasks = {}
-            for task_id, task_info in running_tasks.items():
-                # 复制任务信息并移除不可序列化的字段
-                task_copy = task_info.copy()
-                if 'process' in task_copy:
-                    # 将进程对象转换为可序列化的信息
-                    if task_copy['process'] is not None:
-                        process_obj = task_copy['process']
-                        task_copy['process_info'] = {
-                            'pid': process_obj.pid,
-                            'is_running': process_obj.poll() is None,  # 检查进程是否仍在运行
-                        }
-                    del task_copy['process']  # 删除不可序列化的进程对象
-                
-                serializable_tasks[task_id] = task_copy
+            
+            tasks = get_tasks()
+            
             self.tell({
                 "status": 0,
                 "message": "All completed tasks cleaned up",
-                "data": serializable_tasks
+                "data": tasks
             })
             return
         
