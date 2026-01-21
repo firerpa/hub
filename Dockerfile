@@ -61,11 +61,4 @@ ENV DISPLAY=:4096
 EXPOSE 8000 65000
 WORKDIR                 /user
 COPY --from=builder / /
-
-# 重新创建必要的目录
-RUN mkdir -p /user/code /user/compressed
-# 如果需要，可以从builder阶段复制文件
-COPY --from=builder /tmp/build/scripts/* /user/code/
-COPY --from=builder /tmp/build/compressed/* /user/compressed/
-
 CMD [ "entry" ]
