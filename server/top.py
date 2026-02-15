@@ -2,92 +2,10 @@
 #
 # Distributed under MIT license.
 # See file LICENSE for detail or copy at https://opensource.org/licenses/MIT
-import os
-import json
-import requests
-
-from base64 import b64encode, b64decode
-
-from requests.packages.urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
-
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import AES, PKCS1_OAEP
-from Crypto.Random import get_random_bytes
-from Crypto.Util.Padding import pad, unpad
+from .sapi import SecureAPIClient
 
 
-def encrypt_key_with_public_key(public_key, symmetric_key):
-    public_key = b64decode(public_key)
-    public_key = RSA.import_key(public_key)
-    cipher_rsa = PKCS1_OAEP.new(public_key)
-    encrypted_key = cipher_rsa.encrypt(symmetric_key)
-    return b64encode(encrypted_key)
-
-
-def decrypt_key_with_private_key(private_key, encrypted_key_base64):
-    private_key = b64decode(private_key)
-    private_key = RSA.import_key(private_key)
-    cipher_rsa = PKCS1_OAEP.new(private_key)
-    encrypted_key = b64decode(encrypted_key_base64)
-    symmetric_key = cipher_rsa.decrypt(encrypted_key)
-    return symmetric_key
-
-
-def aes_encrypt(key, plaintext):
-    iv = get_random_bytes(AES.block_size)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    ciphertext = cipher.encrypt(pad(plaintext, AES.block_size))
-    combined = iv + ciphertext
-    return b64encode(combined)
-
-
-def aes_decrypt(key, encrypted_data_base64):
-    combined = b64decode(encrypted_data_base64)
-    iv = combined[:AES.block_size]
-    ciphertext = combined[AES.block_size:]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
-    return plaintext
-
-
-class TopNetworkError(Exception):
-    """ TopNetworkError """
-
-
-class BaseTOPAPIClient(object):
-    def __init__(self, url, ckey=None):
-        self.s = requests.Session()
-        retry = Retry(total=3, backoff_factor=0.5)
-        self.s.mount("http://", HTTPAdapter(max_retries=retry))
-        self.noraise = False
-        self.ckey = ckey
-        self.url = url
-    def raise_exc(self, msg):
-        raise TopNetworkError(msg)
-    def raise_remote_exc(self, res):
-        err = res["status"] != 0 and not self.noraise
-        message = res.get("message") or res.get("error")
-        err and self.raise_exc(message)
-        return True
-    def do_request(self, data=None):
-        key = os.urandom(32)
-        s = encrypt_key_with_public_key(self.ckey, key)
-        data = aes_encrypt(key, json.dumps(data).encode())
-        res = self.s.post(self.url, params=dict(s=s.decode()),
-                                                data=data)
-        data = aes_decrypt(key, res.content)
-        return json.loads(data)
-    def request(self, name, args=None):
-        data = dict()
-        data["api"] = name
-        data["args"] = args or {}
-        res = self.do_request(data=data)
-        self.raise_remote_exc(res)
-        return res
-
-
-class TopNetworkCtl(BaseTOPAPIClient):
+class TopNetworkCtl(SecureAPIClient):
     def __init__(self, network, url, ckey):
         super().__init__(url, ckey)
         self.network = network
@@ -176,7 +94,7 @@ class TopNetworkCtl(BaseTOPAPIClient):
         return data
 
 
-class TopCtl(BaseTOPAPIClient):
+class TopCtl(SecureAPIClient):
     def __init__(self, url, ckey, secret):
         super().__init__(url, ckey)
         self.secret = secret
