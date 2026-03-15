@@ -7,6 +7,7 @@
 import os
 import json
 import time
+import struct
 import random
 import tornado.web
 import tornado.ioloop
@@ -87,6 +88,26 @@ def aes_decrypt(key, encrypted_data_base64):
     return unz(plaintext) if zd else plaintext
 
 
+def aes_gcm_encrypt(key, plaintext):
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    z_text = z(plaintext, 4)
+    ciphertext, tag = cipher.encrypt_and_digest(z_text)
+    combined = nonce + tag + ciphertext
+    return combined
+
+
+def aes_gcm_decrypt(key, encrypted_data):
+    nonce, tag = struct.unpack(">12s16s",
+                            encrypted_data[:28])
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext = encrypted_data[28:]
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    zd = int.from_bytes(plaintext[:2], "big") in (0x7801, 0x789c,
+                                                  0x78da, 0x785e)
+    return unz(plaintext) if zd else plaintext
+
+
 class SecureAPIClientError(Exception):
     """ SecureAPIClientError """
 
@@ -95,7 +116,7 @@ class SecureAPIClient(object):
     def __init__(self, url, ckey, retries=3, max_backoff=5,
                                          backoff_factor=1.0,
                         retry_status=[500, 502, 503, 504],
-                        noraise=False):
+                        noraise=False, ver=1):
         self.s = requests.Session()
         class MaxIntervalRetry(Retry):
             DEFAULT_BACKOFF_MAX = max_backoff
@@ -107,9 +128,17 @@ class SecureAPIClient(object):
         self.s.headers["Accept"] = None
         self.s.headers["Accept-Encoding"] = SKIP_HEADER
         self.s.headers["User-Agent"] = SKIP_HEADER
+        self.ver = ver
+        getattr(self, f"setup_v{ver}", self.setup_v1)()
         self.noraise = noraise
         self.ckey = ckey
         self.url = url
+    def setup_v2(self):
+        self.encrypt = aes_gcm_encrypt
+        self.decrypt = aes_gcm_decrypt
+    def setup_v1(self):
+        self.encrypt = aes_encrypt
+        self.decrypt = aes_decrypt
     def raise_exc(self, msg):
         raise SecureAPIClientError(msg)
     def raise_remote_exc(self, res):
@@ -123,11 +152,12 @@ class SecureAPIClient(object):
     def do_request(self, data=None):
         key = os.urandom(32)
         s = encrypt_key_with_public_key(self.ckey, key)
-        data = aes_encrypt(key, json.dumps(data, separators=(",", ":")).encode())
-        res = self.s.post(self.url, params=dict(s=s.decode()),
+        data = self.encrypt(key, json.dumps(data, separators=(",", ":")).encode())
+        res = self.s.post(self.url, params=dict(s=s.decode(),
+                                                ver=self.ver),
                                                 verify=False,
                                                 data=data)
-        data = aes_decrypt(key, res.content)
+        data = self.decrypt(key, res.content)
         return json.loads(data)
     def request(self, name, args=None):
         data = dict()
@@ -191,13 +221,25 @@ class SecureAPIService(tornado.web.RequestHandler):
                                         **configs):
         self.skey = skey
         self.api_ekey = None
+        self.encrypt = aes_encrypt
+        self.decrypt = aes_decrypt
         self.errors = errors or dict()
         self.kwargs = configs
 
+    def setup_v2(self):
+        self.encrypt = aes_gcm_encrypt
+        self.decrypt = aes_gcm_decrypt
+
+    def setup_v1(self):
+        self.encrypt = aes_encrypt
+        self.decrypt = aes_decrypt
+
     def prepare(self):
         s = self.get_query_argument("s")
+        v = self.get_query_argument("ver", "1")
+        getattr(self, f"setup_v{v}", self.setup_v1)()
         ekey = decrypt_key_with_private_key(self.skey, s)
-        body = aes_decrypt(ekey, self.request.body)
+        body = self.decrypt(ekey, self.request.body)
         data = json.loads(body)
         self.api_args = data.get("args", {})
         self.api_name = data.get("api")
@@ -231,8 +273,8 @@ class SecureAPIService(tornado.web.RequestHandler):
         message["data"] = data
         if self.api_ekey == None:
             return self.write(message)
-        payload = aes_encrypt(self.api_ekey, json.dumps(message,
-                              separators=(",", ":")).encode())
+        payload = self.encrypt(self.api_ekey, json.dumps(message,
+                               separators=(",", ":")).encode())
         self.write(payload)
 
     async def comm(self, *args):
@@ -247,12 +289,12 @@ class SecureAPIService(tornado.web.RequestHandler):
         return getattr(self, f"api_{self.api_name}",
                                 self.api_default)()
     def get_api_argument(self, name, default=_ArgDefaultMarker()):
-        result = self.api_args.get(name) or default
+        result = self.api_args.get(name, default)
         if isinstance(result, _ArgDefaultMarker): self.throw(400,
                           message="Missing argument %s" % name)
         return result
     def get_api_config(self, name, default=_ArgDefaultMarker()):
-        result = self.kwargs.get(name) or default
+        result = self.kwargs.get(name, default)
         if isinstance(result, _ArgDefaultMarker): self.throw(400,
                           message="Missing config %s" % name)
         return result
