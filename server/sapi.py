@@ -116,7 +116,7 @@ class SecureAPIClient(object):
     def __init__(self, url, ckey, retries=3, max_backoff=5,
                                          backoff_factor=1.0,
                         retry_status=[500, 502, 503, 504],
-                        noraise=False, ver=1):
+                        noraise=False, ver=2):
         self.s = requests.Session()
         class MaxIntervalRetry(Retry):
             DEFAULT_BACKOFF_MAX = max_backoff
