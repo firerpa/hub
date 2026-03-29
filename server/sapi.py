@@ -56,14 +56,13 @@ def encrypt_key_with_public_key(public_key, symmetric_key):
     public_key = RSA.import_key(public_key)
     cipher_rsa = PKCS1_OAEP.new(public_key)
     encrypted_key = cipher_rsa.encrypt(symmetric_key)
-    return b64encode(encrypted_key)
+    return encrypted_key
 
 
-def decrypt_key_with_private_key(private_key, encrypted_key_base64):
+def decrypt_key_with_private_key(private_key, encrypted_key):
     private_key = b64decode(private_key)
     private_key = RSA.import_key(private_key)
     cipher_rsa = PKCS1_OAEP.new(private_key)
-    encrypted_key = b64decode(encrypted_key_base64)
     symmetric_key = cipher_rsa.decrypt(encrypted_key)
     return symmetric_key
 
@@ -74,13 +73,12 @@ def aes_encrypt(key, plaintext):
     z_text = z(plaintext, 4)
     ciphertext = cipher.encrypt(pad(z_text, AES.block_size))
     combined = iv + ciphertext
-    return b64encode(combined)
+    return combined
 
 
-def aes_decrypt(key, encrypted_data_base64):
-    combined = b64decode(encrypted_data_base64)
-    iv = combined[:AES.block_size]
-    ciphertext = combined[AES.block_size:]
+def aes_decrypt(key, encrypted_data):
+    iv = encrypted_data[:AES.block_size]
+    ciphertext = encrypted_data[AES.block_size:]
     cipher = AES.new(key, AES.MODE_CBC, iv)
     plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
     zd = int.from_bytes(plaintext[:2], "big") in (0x7801, 0x789c,
@@ -116,7 +114,7 @@ class SecureAPIClient(object):
     def __init__(self, url, ckey, retries=3, max_backoff=5,
                                          backoff_factor=1.0,
                         retry_status=[500, 502, 503, 504],
-                        noraise=False, ver=2):
+                        noraise=False, ver=3):
         self.s = requests.Session()
         class MaxIntervalRetry(Retry):
             DEFAULT_BACKOFF_MAX = max_backoff
@@ -133,6 +131,9 @@ class SecureAPIClient(object):
         self.noraise = noraise
         self.ckey = ckey
         self.url = url
+    def setup_v3(self):
+        self.encrypt = aes_gcm_encrypt
+        self.decrypt = aes_gcm_decrypt
     def setup_v2(self):
         self.encrypt = aes_gcm_encrypt
         self.decrypt = aes_gcm_decrypt
@@ -149,14 +150,23 @@ class SecureAPIClient(object):
         err = res["status"] != 0
         message = res.get("message") or res.get("error")
         err and self.raise_exc(message)
+    def pack_v1(self, s, data):
+        return data, dict(s=b64encode(s).decode(),
+                                    ver=self.ver)
+    def pack_v2(self, s, data):
+        return self.pack_v1(s, data)
+    def pack_v3(self, s, data):
+        header = struct.pack(">BBHI", self.ver, 0, len(s), len(data))
+        return header + s + data, dict()
     def do_request(self, data=None):
         key = os.urandom(32)
         s = encrypt_key_with_public_key(self.ckey, key)
         data = self.encrypt(key, json.dumps(data, separators=(",", ":")).encode())
-        res = self.s.post(self.url, params=dict(s=s.decode(),
-                                                ver=self.ver),
+        body, query = getattr(self, f"pack_v{self.ver}",
+                                  self.pack_v1)(s, data)
+        res = self.s.post(self.url, params=query,
                                                 verify=False,
-                                                data=data)
+                                                data=body)
         data = self.decrypt(key, res.content)
         return json.loads(data)
     def request(self, name, args=None):
@@ -205,6 +215,9 @@ class SecureAPIService(tornado.web.RequestHandler):
         raise HTTPError(status, reason=error,
                         log_message=message)
 
+    def throw_if(self, cond, *args, **kwargs):
+        if cond: self.throw(*args, **kwargs)
+
     def r_string(self, n):
         return "".join(random.sample("abcdefhiklmnors"\
                                      "tuvwxz0123456789", n))
@@ -226,21 +239,44 @@ class SecureAPIService(tornado.web.RequestHandler):
         self.errors = errors or dict()
         self.kwargs = configs
 
-    def setup_v2(self):
+    def setup_v3(self, s, raw):
         self.encrypt = aes_gcm_encrypt
         self.decrypt = aes_gcm_decrypt
+        self.throw_if(len(raw) < 8, 400, error="Malformed Request",
+                                    message="Invalid protocol")
+        v, f, s_len, d_len = struct.unpack(">BBHI", raw[:8])
+        s = raw[8 : 8 + s_len]
+        body = raw[8 + s_len : 8 + s_len + d_len]
+        ekey = decrypt_key_with_private_key(self.skey, s)
+        body = self.decrypt(ekey, body)
+        return ekey, json.loads(body)
 
-    def setup_v1(self):
+    def setup_v2(self, s, raw):
+        self.encrypt = aes_gcm_encrypt
+        self.decrypt = aes_gcm_decrypt
+        self.throw_if(not s, 400, error="Missing Secure",
+                                  message="Invalid protocol")
+        s = b64decode(s)
+        ekey = decrypt_key_with_private_key(self.skey, s)
+        body = self.decrypt(ekey, raw)
+        return ekey, json.loads(body)
+
+    def setup_v1(self, s, raw):
         self.encrypt = aes_encrypt
         self.decrypt = aes_decrypt
+        self.throw_if(not s, 400, error="Missing Secure",
+                                  message="Invalid protocol")
+        s = b64decode(s)
+        ekey = decrypt_key_with_private_key(self.skey, s)
+        body = self.decrypt(ekey, raw)
+        return ekey, json.loads(body)
 
     def prepare(self):
-        s = self.get_query_argument("s")
-        v = self.get_query_argument("ver", "1")
-        getattr(self, f"setup_v{v}", self.setup_v1)()
-        ekey = decrypt_key_with_private_key(self.skey, s)
-        body = self.decrypt(ekey, self.request.body)
-        data = json.loads(body)
+        s = self.get_argument("s", None)
+        v = self.get_argument("ver", None)
+        v = v if v else (1 if s else 3)
+        ekey, data = getattr(self, f"setup_v{v}", self.setup_v1)(s,
+                                                self.request.body)
         self.api_args = data.get("args", {})
         self.api_name = data.get("api")
         self.api_ekey = ekey
