@@ -150,11 +150,17 @@ class SecureAPIClient(object):
         err = res["status"] != 0
         message = res.get("message") or res.get("error")
         err and self.raise_exc(message)
+    def unpack_v1(self, data):
+        return b64decode(data)
+    def unpack_v2(self, data):
+        return data
+    def unpack_v3(self, data):
+        return data
     def pack_v1(self, s, data):
+        return b64encode(data), dict(s=b64encode(s).decode())
+    def pack_v2(self, s, data):
         return data, dict(s=b64encode(s).decode(),
                                     ver=self.ver)
-    def pack_v2(self, s, data):
-        return self.pack_v1(s, data)
     def pack_v3(self, s, data):
         header = struct.pack(">BBHI", self.ver, 0, len(s), len(data))
         return header + s + data, dict()
@@ -167,7 +173,9 @@ class SecureAPIClient(object):
         res = self.s.post(self.url, params=query,
                                                 verify=False,
                                                 data=body)
-        data = self.decrypt(key, res.content)
+        data = getattr(self, f"unpack_v{self.ver}",
+                          self.unpack_v1)(res.content)
+        data = self.decrypt(key, data)
         return json.loads(data)
     def request(self, name, args=None):
         data = dict()
@@ -266,10 +274,18 @@ class SecureAPIService(tornado.web.RequestHandler):
         self.decrypt = aes_decrypt
         self.throw_if(not s, 400, error="Missing Secure",
                                   message="Invalid protocol")
+        d = b64decode(raw)
         s = b64decode(s)
         ekey = decrypt_key_with_private_key(self.skey, s)
-        body = self.decrypt(ekey, raw)
+        body = self.decrypt(ekey, d)
         return ekey, json.loads(body)
+
+    def pack_v1(self, data):
+        return b64encode(data)
+    def pack_v2(self, data):
+        return data
+    def pack_v3(self, data):
+        return data
 
     def prepare(self):
         s = self.get_argument("s", None)
@@ -277,6 +293,7 @@ class SecureAPIService(tornado.web.RequestHandler):
         v = v if v else (1 if s else 3)
         ekey, data = getattr(self, f"setup_v{v}", self.setup_v1)(s,
                                                 self.request.body)
+        self.ver = v
         self.api_args = data.get("args", {})
         self.api_name = data.get("api")
         self.api_ekey = ekey
@@ -309,8 +326,10 @@ class SecureAPIService(tornado.web.RequestHandler):
         message["data"] = data
         if self.api_ekey == None:
             return self.write(message)
-        payload = self.encrypt(self.api_ekey, json.dumps(message,
+        body = self.encrypt(self.api_ekey, json.dumps(message,
                                separators=(",", ":")).encode())
+        payload = getattr(self, f"pack_v{self.ver}",
+                             self.pack_v1)(body)
         self.write(payload)
 
     async def comm(self, *args):
