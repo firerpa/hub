@@ -1,1 +1,0 @@
-import{_ as t}from"./chunk-fb406dfe.js";function c(e){return t.get("/v1/device",e)}function r(e,n){return t.putForm("/v1/device/"+e+"/comment",{comment:n})}function m(e){return t.delete("/v1/device/"+e)}function d(e){return t.postForm("/v1/device",{comment:e})}export{d as a,r as c,m as d,c as g};

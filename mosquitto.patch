@@ -1,0 +1,70 @@
+diff --git a/src/websockets.c b/src/websockets.c
+index f3443517..2d27bb80 100644
+--- a/src/websockets.c
++++ b/src/websockets.c
+@@ -36,6 +36,7 @@ Contributors:
+ 
+ #ifndef WIN32
+ #  include <sys/socket.h>
++#  include <unistd.h>
+ #endif
+ 
+ #if defined(WITH_WEBSOCKETS) && WITH_WEBSOCKETS == WS_IS_LWS
+@@ -676,6 +677,7 @@ void mosq_websockets_init(struct mosquitto__listener *listener, const struct mos
+ 	size_t protocol_count;
+ 	int i;
+ 	struct libws_mqtt_hack *user;
++	bool unix_socket = false;
+ 
+ 	/* Count valid protocols */
+ 	for(protocol_count=0; protocols[protocol_count].name; protocol_count++){
+@@ -701,6 +703,27 @@ void mosq_websockets_init(struct mosquitto__listener *listener, const struct mos
+ 	info.protocols = p;
+ 	info.gid = -1;
+ 	info.uid = -1;
++
++#ifdef WITH_UNIX_SOCKETS
++	if(listener->port == 0 && listener->unix_socket_path != NULL){
++#ifdef LWS_SERVER_OPTION_UNIX_SOCK
++		unix_socket = true;
++		info.options |= LWS_SERVER_OPTION_UNIX_SOCK;
++		info.iface = listener->unix_socket_path;
++
++		/* Match net__socket_listen_unix() behaviour: remove any existing socket file. */
++#ifndef WIN32
++		if(listener->unix_socket_path[0] != '@'){
++			(void)unlink(listener->unix_socket_path);
++		}
++#endif
++#else
++		log__printf(NULL, MOSQ_LOG_ERR, "Error: This build of libwebsockets does not support Unix domain socket listeners.");
++		mosquitto_FREE(p);
++		return;
++#endif
++	}
++#endif
+ #ifdef WITH_TLS
+ 	if(listener->cafile){
+ 		info.ssl_ca_filepath = listener->cafile;
+@@ -723,7 +746,7 @@ void mosq_websockets_init(struct mosquitto__listener *listener, const struct mos
+ #endif
+ 
+ 	info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+-	if(listener->socket_domain == AF_INET){
++	if(!unix_socket && listener->socket_domain == AF_INET){
+ 		info.options |= LWS_SERVER_OPTION_DISABLE_IPV6;
+ 	}
+ 	info.max_http_header_data = conf->packet_buffer_size;
+@@ -756,7 +779,11 @@ void mosq_websockets_init(struct mosquitto__listener *listener, const struct mos
+ 
+ 	lws_set_log_level(conf->websockets_log_level, log_wrap);
+ 
+-	log__printf(NULL, MOSQ_LOG_INFO, "Opening websockets listen socket on port %d.", listener->port);
++	if(unix_socket){
++		log__printf(NULL, MOSQ_LOG_INFO, "Opening websockets listen socket on path %s.", listener->unix_socket_path);
++	}else{
++		log__printf(NULL, MOSQ_LOG_INFO, "Opening websockets listen socket on port %d.", listener->port);
++	}
+ 	listener->ws_in_init = true;
+ 	listener->ws_context = lws_create_context(&info);
+ 	listener->ws_in_init = false;

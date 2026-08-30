@@ -1,6 +1,7 @@
 #!/bin/bash
-export API_PORT=65000
-export WEB_PORT=8000
+export API_PORT=${API_PORT:-65000}
+export WEB_PORT=${WEB_PORT:-8000}
+export FWD_PORT=${FWD_PORT:-7000}
 
 echo -e "\033[1;31m ___________.__              ____________________  _____    \033[0m"
 echo -e "\033[1;31m \_   _____/|__|______   ____\______   \______   \/  _  \   \033[0m"
@@ -8,7 +9,7 @@ echo -e "\033[1;31m  |    __)  |  \_  __ \_/ __ \|       _/|     ___/  /_\  \  \
 echo -e "\033[1;31m  |     \   |  ||  | \/\  ___/|    |   \|    |  /    |    \ \033[0m"
 echo -e "\033[1;31m  \___  /   |__||__|    \___  >____|_  /|____|  \____|__  / \033[0m"
 echo -e "\033[1;31m      \/                    \/       \/                 \/  \033[0m"
-echo -e "\033[0;32m                                                  server    \033[0m"
+echo -e "\033[0;32m                                                PIGEON      \033[0m"
 
 LISTENCONF=${OPENRESTY}/nginx/conf/listen.conf
 CONTRLCONF=${OPENRESTY}/nginx/conf/listen-control.conf
@@ -28,7 +29,7 @@ export "$key=$value"
 done < /user/environment
 fi
 
-variables=("TOP_ENDPOINT" "TOP_CLIENT_KEY" "TOP_SECRET")
+variables=("POSTGRES_PASSWORD" "RABBITMQ_PASSWORD" "REDIS_PASSWORD" "LOCAL_LAN_IP" "WEB_PORT" "FWD_PORT" "API_PORT" "PUBLIC_IP")
 for var in "${variables[@]}"; do if [ -z "${!var}" ]; then echo "Error: environment $var not set"; exit 10; fi; done
 
 capabilities=$(grep CapEff /proc/$$/status | cut -f2)
@@ -36,16 +37,51 @@ if [ $(( (0x$capabilities & (1 << 21)) != 0 )) -eq 0 ]; then
 echo "Container is NOT running in privileged mode."
 exit 8
 fi
-if [ -f /user/server.crt ] && [ -f /user/server.key ]; then
+
+pushd $(pwd)
+cd /user
+# LAMDA root cert
+if [ ! -f root.key ]; then
+openssl genrsa -out root.key 2048
+openssl req -x509 -new -nodes -key root.key -sha256 -days 100000 -out root.crt -subj "/O=LAMDA"
+fi
+# Mosquitto cert
+if [ ! -f mosquitto.key ]; then
+openssl genrsa -out mosquitto.key 2048
+openssl req -new -key mosquitto.key -out mosquitto.csr -subj "/O=FIRERPA"
+openssl x509 -req -in mosquitto.csr -CA root.crt -CAkey root.key -CAcreateserial -out mosquitto.crt -days 100000 -sha256
+fi
+
+mkdir -p /run/mosquitto
+useradd -r -s /usr/sbin/nologin -M mosquitto 2>/dev/null || true
+chown mosquitto:mosquitto mosquitto.{key,crt}
+chown mosquitto:mosquitto /run/mosquitto
+
+# HTTPS cert
+if [ ! -f server.key ]; then
+openssl req -x509 -newkey rsa:2048 -nodes -keyout server.key -out server.crt -days 1095 -subj "/C=US/CN=${DOMAIN:-firerpa.local}"
+fi
+popd
+
 echo "listen ${WEB_PORT:-8000} ssl;"         > ${LISTENCONF}
-echo "http2  on;"                            >>${LISTENCONF}
+
+if [ -f /user/server.crt ] && [ -f /user/server.key ]; then
 echo "ssl_certificate /user/server.crt;"     >>${LISTENCONF}
 echo "ssl_certificate_key /user/server.key;" >>${LISTENCONF}
-export HTTPS=1
-else
-echo "listen ${WEB_PORT:-8000};"             > ${LISTENCONF}
-export HTTPS=0
 fi
+
 echo "listen ${API_PORT:-65000};"            > ${CONTRLCONF}
-echo "server_name ${DOMAIN:-firerpa.local};" >>${LISTENCONF}
+echo "server_name ${DOMAIN:-pigeon.local};" >>${LISTENCONF}
+
+if [ ! -f /user/environment ]; then
+for var in "${variables[@]}"; do
+echo "${var}=${!var}" >> /user/environment
+done
+fi
+
+export NPROC=$(nproc)
+export RUNTIMEPASSWD=$(openssl rand -hex 8)
+while ! timeout -s kill 30 python3 -m executor.initialize; do sleep 5; done
+echo "\"postgres\" \"${POSTGRES_PASSWORD}\"" >/etc/pgbouncer-userlist.txt
+chown -R nobody:nogroup /etc/pgbouncer*
 exec supervisord $@
